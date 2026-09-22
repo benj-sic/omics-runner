@@ -30,7 +30,7 @@ def fetch_geo_data(geo_id: str, output_dir: str = "./raw_data") -> tuple[GEOpars
     gse = GEOparse.get_GEO(geo=geo_id, destdir=dataset_dir)
 
     # Get supplementary files
-    gse.download_supplementary_files(directory=supp_files_dir)
+    gse.download_supplementary_files(directory=supp_files_dir, download_sra=False)
 
     return gse, supp_files_dir
 
@@ -94,6 +94,17 @@ def run_deseq2_analysis(counts_df: pd.DataFrame, phenotype_df: pd.DataFrame, con
 
     return results_df
 
+def filter_deg_results(results_df: pd.DataFrame, padj_thresh: float = 0.05, lfc_thresh: float = 1.0,) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # Filter out ns and missing rows
+    sig_genes = results_df.dropna(subset=["padj"]).query(f"padj < {padj_thresh}")
+
+    # Extract and sort upregulated genes
+    upregulated = sig_genes[sig_genes["log2FoldChange"] > lfc_thresh].sort_values(by="padj", ascending=True)
+
+    # Extract and sort downregulated genes
+    downregulated = sig_genes[sig_genes["log2FoldChange"] < lfc_thresh].sort_values(by="padj", ascending=True)
+
+    return upregulated, downregulated
 
 def annotate_ensembl_ids(results_df: pd.DataFrame, species: str = "human") -> pd.DataFrame:
     df = results_df.copy()
@@ -116,18 +127,6 @@ def annotate_ensembl_ids(results_df: pd.DataFrame, species: str = "human") -> pd
     df.index = [mapping.get(i, i) for i in clean_ids]
 
     return df
-
-def filter_deg_results(results_df: pd.DataFrame, padj_thresh: float = 0.05, lfc_thresh: float = 1.0,) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # Filter out ns and missing rows
-    sig_genes = results_df.dropna(subset=["padj"]).query(f"padj < {padj_thresh}")
-
-    # Extract and sort upregulated genes
-    upregulated = sig_genes[sig_genes["log2FoldChange"] > lfc_thresh].sort_values(by="padj", ascending=True)
-
-    # Extract and sort downregulated genes
-    downregulated = sig_genes[sig_genes["log2FoldChange"] < lfc_thresh].sort_values(by="padj", ascending=True)
-
-    return upregulated, downregulated
 
 # Main execution
 def main ():
@@ -161,16 +160,17 @@ def main ():
             n_cpus=args.cpus,
         )
 
-        # Annotate
-        annotated_results = annotate_ensembl_ids(raw_results)
-
         # Filter
-        upregulated, downregulated = filter_deg_results(
-            annotated_results, padj_thresh=args.padj, lfc_thresh=args.lfc
+        raw_up, raw_down = filter_deg_results(
+            raw_results, padj_thresh=args.padj, lfc_thresh=args.lfc
         )
 
+        # Annotate
+        upregulated = annotate_ensembl_ids(raw_up)
+        downregulated = annotate_ensembl_ids(raw_down)
+
         # Save results
-        annotated_results.to_csv(os.path.join(args.outdir, f"{args.geo_id}_all_results.csv"))
+        raw_results.to_csv(os.path.join(args.outdir, f"{args.geo_id}_all_results_raw.csv"))
         upregulated.to_csv(os.path.join(args.outdir, f"{args.geo_id}_upregulated.csv"))
         downregulated.to_csv(os.path.join(args.outdir, f"{args.geo_id}_downregulated.csv"))
 

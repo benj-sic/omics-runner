@@ -42,7 +42,7 @@ def run_agent_query(user_query: str, model_name: str = "qwen2.5:32b") -> dict[st
             "role": "system",
             "content": (
                 "You are a bioinformatics assistant. If you lack exact metadata columns names "
-                "to run an analysis, invole 'inspect_geo_metadata' forst to inspect available columns."
+                "to run an analysis, invoke 'inspect_geo_metadata' forst to inspect available columns."
             ),
         },
         {
@@ -188,6 +188,7 @@ def execute_deseq2_pipeline(
     # Package execution summary to return to the agent framework
     return {
         "status": "success",
+        "comparison": f"{contrast[1]} vs {contrast[2]}",
         "geo_id": geo_id,
         "total_upregulated": len(upregulated),
         "total_downregulated": len(downregulated),
