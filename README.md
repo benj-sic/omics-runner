@@ -28,14 +28,14 @@ python cli.py "Is TNF expression significantly elevated in anti-PD-1 non-respond
 
 ## Workflow
 
-1. The agent extracts target GEO series accessions (GSE), metadata, and contrasts from your natural language prompt.
-2. The agent queries NCBI GEO via `GEOparse` to parse sample annotations (GSM) and assemble gene-level counts or transcript abundances into an aligned matrix.
-3. The agent executes differential expression analysis to derive log<sub>2</sub> fold changes, standard errors, and Benjamini-Hochberg adjusted *p*-values (*q*-values).
-4. The agent evaluates the resulting DEG statistics against the original prompt and outputs a concise summary.
+1. Agent extracts target GEO series accessions (GSE), metadata, and contrasts from your natural language prompt.
+2. Agent queries NCBI GEO via `GEOparse` to parse sample annotations (GSM) and assemble gene-level counts or transcript abundances into an aligned matrix.
+3. Agent executes differential expression analysis to derive log<sub>2</sub> fold changes, standard errors, and Benjamini-Hochberg adjusted *p*-values (*q*-values).
+4. Agent evaluates the resulting DEG statistics against the original prompt and outputs a concise summary. For a request about a named human gene, the agent reolves its symbol to an Ensembl ID and looks up its statistics in the complete results. For a general request, it summarizes the run.
 
 ## Outputs
 
-All artifacts are written to `results/`:
-- `<geo_id>_all_results_raw.csv` = Differential expression matrix across all evaluated genes.
-- `<geo_id>_upregulated.csv` = Statistically significant upregulated genes (padj < 0.05, log2FC > 1.0).
-- `<geo_id>_downregulated.csv` = Statistically significant downregulated genes (padj < 0.05, log2FC < -1.0).
+All artifacts are written to `results/` unless another output directory is specified:
+- `<geo_id>_all_results_raw.csv` = Differential expression matrix across all evaluated genes using gene IDS.
+- `<geo_id>_upregulated.csv` = Statistically significant upregulated genes using gene symbols (padj < 0.05, log2FC > 1.0).
+- `<geo_id>_downregulated.csv` = Statistically significant downregulated genes using gene symbols (padj < 0.05, log2FC < -1.0).
