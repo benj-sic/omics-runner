@@ -59,3 +59,32 @@ INSPECT_METADATA_SCHEMA = {
         },
     },
 }
+
+GENE_LOOKUP_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "lookup_gene",
+        "description": (
+            "Look up one human gene by its gene symbol in the current run's "
+            "complete DESeq2 results. Use this tool before answering a request "
+            "about a named gene. Returns its matching Ensembl IDs, log2 fold "
+            "changes, p-values, adjusted p-values, and whether each row passes "
+            "the run's DEG cutoffs. It can also report that the symbol could "
+            "not be resolved or that the gene was absent from the result file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "gene_symbol": {
+                    "type": "string",
+                    "description": (
+                        "A single human gene symbol to look up, such as TNF. "
+                        "Do not include a file path or a comparison group."
+                    ),
+                }
+            },
+            "required": ["gene_symbol"],
+            "additionalProperties": False,
+        },
+    },
+}

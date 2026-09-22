@@ -1,7 +1,8 @@
 
-from argparse import Action
+import argparse
+import pandas as pd
 
-from agent import execute_deseq2_pipeline, inspect_geo_metadata, ActionDecision
+from agent import execute_deseq2_pipeline, inspect_geo_metadata, ActionDecision, summarize_analysis
 import ollama
 
 from tools import INSPECT_METADATA_SCHEMA
@@ -57,8 +58,14 @@ def prompt_user_for_contrast(metadata: dict):
     return user_choices
 
 def main():
+    parser = argparse.ArgumentParser(description="Run DESeq2 pipeline on GEO datasets.")
+    parser.add_argument("--outdir", type=str, default="./results", help="Directory to save output files")
+    parser.add_argument("query", nargs="?", help="Question or comparison to analyze")
+
+    args = parser.parse_args()
+
     print("Initiating omics-runner...")
-    user_prompt = str(input("What analysis would you like to perform? "))
+    user_prompt = args.query or input("What analysis would you like to perform? ")
 
     print("Thinking...")
     response = ollama.chat(
@@ -99,6 +106,7 @@ def main():
         condition_col=user_condition,
         test_group = user_test,
         reference_group = user_ref,
+        outdir=args.outdir,
         padj = 0.05,
         lfc = 1.0
     )
@@ -106,21 +114,13 @@ def main():
     print("DESeq2 Pipeline Results:")
     print(json.dumps(results, indent=2))
 
-    print("LLM Summary:")
-    summary_response = ollama.chat(
-        model="qwen2.5:32b",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a bioinformatics assistant. Summarize DESeq2 results clearly for scientists.",
-            },
-            {
-                "role": "user",
-                "content": f"Summarize these differential expression results:\n{json.dumps(results)}"
-            }
-        ]
+    print("Generating LLM Summary...")
+    summary = summarize_analysis(
+        user_prompt=user_prompt,
+        results=results
     )
-    print(summary_response["message"]["content"])
+    print("LLM Summary:")
+    print(summary)
 
 if __name__ == "__main__":
     main()

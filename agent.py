@@ -1,20 +1,17 @@
 
+import pandas as pd
 import json
 import logging
 from typing import Any
 
 import GEOparse
 import ollama
+import mygene
 from pydantic import BaseModel, Field
 
-from de_pipeline import (
-    annotate_ensembl_ids,
-    build_expression_matrix,
-    fetch_geo_data,
-    filter_deg_results,
-    run_deseq2_analysis,
-)
-from tools import DESEQ2_TOOL_SCHEMA, INSPECT_METADATA_SCHEMA
+from de_pipeline import analyze_and_save
+
+from tools import DESEQ2_TOOL_SCHEMA, INSPECT_METADATA_SCHEMA, GENE_LOOKUP_SCHEMA
 
 logging.basicConfig(level=logging.INFO)
 
@@ -157,44 +154,133 @@ def execute_deseq2_pipeline(
     condition_col: str,
     test_group: str,
     reference_group: str,
+    outdir: str = "./results",
     padj: float = 0.05,
     lfc: float = 1.0,
+    n_cpus: int = 4,
 ) -> dict[str, Any]:
 
     logging.info(f"AGENT TOOL TRIGGERED: Analyzing {geo_id} ({test_group} vs {reference_group})")
 
-    contrast = [condition_col, test_group, reference_group]
-
-    # Fetch raw GEO and supp folder path
-    gse, supp_dir = fetch_geo_data(geo_id=geo_id)
-
-    # Build the count matrix from supp files
-    counts_df = build_expression_matrix(supp_dir=supp_dir)
-
-    # Run PyDeseq2
-    raw_results = run_deseq2_analysis(
-        counts_df=counts_df,
-        phenotype_df=gse.phenotype_data,
+    results = analyze_and_save(
+        geo_id=geo_id,
         condition_col=condition_col,
-        contrast=contrast,
+        test_group=test_group,
+        reference_group=reference_group,
+        outdir=outdir,
+        padj=padj,
+        lfc=lfc,
+        n_cpus=n_cpus,
     )
 
-    # Map Ensembl IDs to gene symbols
-    annotated_results = annotate_ensembl_ids(raw_results)
+    return results
 
-    # Filter top DEGs based on thresholds
-    upregulated, downregulated = filter_deg_results(annotated_results, padj_thresh=padj, lfc_thresh=lfc)
+def lookup_gene_in_results(gene_symbol: str, files: dict[str, str], padj_thresh: float, lfc_thresh: float,) -> dict:
+    symbol = gene_symbol.strip()
 
-    # Package execution summary to return to the agent framework
+    hits = mygene.MyGeneInfo().querymany(
+        [symbol],
+        scopes="symbol",
+        fields="symbol,ensembl.gene",
+        species="human"
+    )
+
+    ensembl_ids = set()
+
+    for hit in hits:
+        if str(hit.get("symbol", "")).casefold() != symbol.casefold():
+            continue
+
+        ensembl = hit.get("ensembl", [])
+        records = ensembl if isinstance(ensembl, list) else [ensembl]
+
+        for record in records:
+            if isinstance(record, dict) and record.get("gene"):
+                ensembl_ids.add(record["gene"])
+
+    if not ensembl_ids:
+        return {"gene_symbol": symbol, "status": "symbol_not_resolved", "matches": []}
+
+    raw = pd.read_csv(files["raw"], index_col=0)
+
+    unversioned_ids = [str(gene_id).split(".", 1)[0] for gene_id in raw.index]
+    matching_rows = raw.loc[pd.Index(unversioned_ids).isin(ensembl_ids)]
+
+    matches = []
+    for gene_id, row in matching_rows.iterrows():
+        fold_change = None if pd.isna(row["log2FoldChange"]) else float(row["log2FoldChange"])
+        adjusted_p = None if pd.isna(row["padj"]) else float(row["padj"])
+        p_value = None if pd.isna(row["pvalue"]) else float(row["pvalue"])
+
+        passes_cutoffs =(
+            adjusted_p < padj_thresh and abs(fold_change) > lfc_thresh
+            if adjusted_p is not None and fold_change is not None
+            else None
+        )
+        matches.append({
+            "ensembl_id": str(gene_id),
+            "log2FoldChange": fold_change,
+            "pvalue": p_value,
+            "padj": adjusted_p,
+            "passes_deg_cutoffs": passes_cutoffs,
+        })
+
     return {
-        "status": "success",
-        "comparison": f"{contrast[1]} vs {contrast[2]}",
-        "geo_id": geo_id,
-        "total_upregulated": len(upregulated),
-        "total_downregulated": len(downregulated),
-        "top_upregulated_genes": upregulated.index[:10].tolist(),
-        "top_downregulated_genes": downregulated.index[:10].tolist(),
+        "gene_symbol": gene_symbol,
+        "status": "found" if matches else "not_in_raw_results",
+        "matches": matches,
     }
+
+def summarize_analysis(user_prompt, results):
+    messages=[
+        {
+            "role": "system",
+            "content": "You are a bioinformatics assistant. Summarize DESeq2 results clearly for scientists.",
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User request:\n{user_prompt}\n\n"
+                f"Analysis results:\n{json.dumps(results)}\n\n"
+                "If the user request contains a specific question, answer it using only the supplied results. "
+                "Before responding to a request about a named gene, call lookup_gene. "
+                "If it is absent from both lists, say it was not found among genes passing the configured cutoffs; do not infer its exact statistics. "
+                "If the user request does not contain a specific question, summarize the main results."
+            )
+        }
+    ]
+
+    response = ollama.chat(
+        model="qwen2.5:32b",
+        messages=messages,
+        tools=[GENE_LOOKUP_SCHEMA],
+    )
+
+    tool_calls = response["message"].get("tool_calls") or []
+
+    if tool_calls:
+        messages.append(response["message"])
+
+        for call in tool_calls:
+            function = call["function"]
+            if function["name"] != "lookup_gene":
+                raise ValueError(f"Unexepected tool: {function['name']}")
+
+            lookup_result = lookup_gene_in_results(
+                function["arguments"]["gene_symbol"],
+                results["files"],
+                padj_thresh=results["padj_threshold"],
+                lfc_thresh=results["lfc_threshold"],
+            )
+            messages.append({
+                "role": "tool",
+                "tool_name": "lookup_gene",
+                "content": json.dumps(lookup_result),
+            })
+
+        response = ollama.chat(model="qwen2.5:32b", messages=messages)
+
+    return response["message"]["content"]
 
 TOOL_MAP = {
     "inspect_geo_metadata": inspect_geo_metadata,

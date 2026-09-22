@@ -15,7 +15,7 @@ A CLI agent that answers your scientific questions by executing e2e differential
 
 ```bash
 pip install -r requirements.txt
-ollama pull qwen2.5:23b
+ollama pull qwen2.5:32b
 ```
 
 ## Usage

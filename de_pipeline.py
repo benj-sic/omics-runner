@@ -13,6 +13,7 @@ import pandas as pd
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
+from pathlib import Path
 
 # Logging
 logging.basicConfig(
@@ -102,7 +103,7 @@ def filter_deg_results(results_df: pd.DataFrame, padj_thresh: float = 0.05, lfc_
     upregulated = sig_genes[sig_genes["log2FoldChange"] > lfc_thresh].sort_values(by="padj", ascending=True)
 
     # Extract and sort downregulated genes
-    downregulated = sig_genes[sig_genes["log2FoldChange"] < lfc_thresh].sort_values(by="padj", ascending=True)
+    downregulated = sig_genes[sig_genes["log2FoldChange"] < -lfc_thresh].sort_values(by="padj", ascending=True)
 
     return upregulated, downregulated
 
@@ -128,6 +129,70 @@ def annotate_ensembl_ids(results_df: pd.DataFrame, species: str = "human") -> pd
 
     return df
 
+def analyze_and_save(
+    geo_id,
+    condition_col,
+    test_group,
+    reference_group,
+    outdir,
+    padj,
+    lfc,
+    n_cpus
+):
+    # Fetch
+    gse, supp_dir = fetch_geo_data(geo_id=geo_id)
+
+    # Build matrix
+    counts_df = build_expression_matrix(supp_dir=supp_dir)
+
+    # Deseq2
+    raw_results = run_deseq2_analysis(
+        counts_df=counts_df,
+        phenotype_df=gse.phenotype_data,
+        condition_col=condition_col,
+        contrast=[condition_col, test_group, reference_group],
+        n_cpus=n_cpus,
+    )
+
+    # Filter
+    raw_up, raw_down = filter_deg_results(
+        raw_results, padj_thresh=padj, lfc_thresh=lfc
+    )
+
+    # Annotate
+    upregulated = annotate_ensembl_ids(raw_up)
+    downregulated = annotate_ensembl_ids(raw_down)
+
+    # Save results
+    output_dir = Path(outdir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_path = output_dir / f"{geo_id}_all_results_raw.csv"
+    up_path = output_dir / f"{geo_id}_upregulated.csv"
+    down_path = output_dir / f"{geo_id}_downregulated.csv"
+
+    raw_results.to_csv(raw_path)
+    upregulated.to_csv(up_path)
+    downregulated.to_csv(down_path)
+
+    logging.info(f"Pipeline finished successfully! Output written to: {outdir}")
+
+    return {
+        "status": "success",
+        "geo_id": geo_id,
+        "test_group": test_group,
+        "reference_group": reference_group,
+        "total_upregulated": len(upregulated),
+        "total_downregulated": len(downregulated),
+        "padj_threshold": padj,
+        "lfc_threshold": lfc,
+        "files": {
+            "raw": str(raw_path),
+            "upregulated": str(up_path),
+            "downregulated": str(down_path),
+        },
+    }
+
 # Main execution
 def main ():
     parser = argparse.ArgumentParser(description="Run DESeq2 pipeline on GEO datasets.")
@@ -140,45 +205,25 @@ def main ():
     parser.add_argument("--lfc", type=float, default=1.0, help="Log2 Fold Change threshold")
 
     args = parser.parse_args()
-    os.makedirs(args.outdir, exist_ok=True)
-
-    full_contrast = [args.condition, args.contrast[0], args.contrast[1]]
 
     try:
-        # Fetch
-        gse, supp_dir = fetch_geo_data(geo_id=args.geo_id)
-
-        # Build matrix
-        counts_df = build_expression_matrix(supp_dir=supp_dir)
-
-        # Deseq2
-        raw_results = run_deseq2_analysis(
-            counts_df=counts_df,
-            phenotype_df=gse.phenotype_data,
+        result = analyze_and_save(
+            geo_id=args.geo_id,
             condition_col=args.condition,
-            contrast=full_contrast,
+            test_group=args.contrast[0],
+            reference_group=args.contrast[1],
+            outdir=args.outdir,
             n_cpus=args.cpus,
-        )
-
-        # Filter
-        raw_up, raw_down = filter_deg_results(
-            raw_results, padj_thresh=args.padj, lfc_thresh=args.lfc
-        )
-
-        # Annotate
-        upregulated = annotate_ensembl_ids(raw_up)
-        downregulated = annotate_ensembl_ids(raw_down)
-
-        # Save results
-        raw_results.to_csv(os.path.join(args.outdir, f"{args.geo_id}_all_results_raw.csv"))
-        upregulated.to_csv(os.path.join(args.outdir, f"{args.geo_id}_upregulated.csv"))
-        downregulated.to_csv(os.path.join(args.outdir, f"{args.geo_id}_downregulated.csv"))
-
-        logging.info(f"Pipeline finished successfully! Output written to: {args.outdir}")
+            padj=args.padj,
+            lfc=args.lfc)
 
     except Exception as e:
         logging.critical(f"Pipeline execution crashed: {e}", exc_info=True)
         sys.exit(1)
+
+    print("Files written:")
+    for label, path in result["files"].items():
+        print(f"{label}: {path}")
 
 if __name__ == "__main__":
     main()
